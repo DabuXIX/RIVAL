@@ -1,65 +1,48 @@
-for (int i = 0; i < RS_232_DM_RXBUFLENGTH; i++) {
-    uint16_t index = (rs_232_dm_tail + i) % RS_232_DM_RXBUFLENGTH;
+uint8_t ecount_get_version(void)
+{
+    // Prepare and send the version request packet
+    uint8_t packet[5];
+    packet[0] = ECOUNT_HEADER;
+    packet[1] = ECOUNT_NODE;
+    packet[2] = 0x12; // Get_Firmware_Version
+    packet[3] = 0;
+    packet[4] = checksum(&packet[1], 3);
 
-    if (rs_232_dm_rx_buffer[index] == 0xBB &&
-        rs_232_dm_rx_buffer[(index + 2) % RS_232_DM_RXBUFLENGTH] == 0x12) {
+    ecount_send(packet, 5);
 
-        // Valid header found, copy packet
-        for (int j = 0; j < 15; j++) {
-            ecount_last_packet[j] = rs_232_dm_rx_buffer[(index + j) % RS_232_DM_RXBUFLENGTH];
-        }
+    // Small delay to allow time for a response
+    HAL_Delay(30);
 
-        uint8_t input_type = ecount_last_packet[13];
+    // Buffer to hold the incoming response
+    uint8_t ecount_last_packet[15];
+    uint8_t answer_byte_cnt = 0;
 
-        memset(ecount_last_packet, 0, sizeof(ecount_last_packet));
+    // Parse message from cyclic buffer
+    while ((rs_232_dm_tail != rs_232_dm_head) && (answer_byte_cnt < sizeof(ecount_last_packet)))
+    {
+        uint8_t byte = rs_232_dm_rx_buffer[rs_232_dm_tail];
 
-        // Advance tail
-        rs_232_dm_tail = (index + 15) % RS_232_DM_RXBUFLENGTH;
+        // Increment tail with wraparound
+        rs_232_dm_tail = (rs_232_dm_tail + 1) % RS_232_DM_CYCBUFFLENGTH;
+
+        // Deassert full flag now that we’ve read
         rs_232_dm_rx_buffer_full = 0;
 
+        // Wait for Start-of-Header (0xBB) as the first valid byte
+        if (answer_byte_cnt == 0 && byte != 0xBB)
+            continue;
+
+        // Store the valid byte
+        ecount_last_packet[answer_byte_cnt++] = byte;
+    }
+
+    // If message complete, extract type byte
+    if (answer_byte_cnt == sizeof(ecount_last_packet))
+    {
+        uint8_t input_type = ecount_last_packet[13];  // Assuming byte 13 holds the type
         return input_type;
     }
-}
 
-
-
-
-uint8_t ecount_get_version(void) {
-    for (int i = 0; i < RS_232_DM_RXBUFLENGTH; i++) {
-        uint16_t index = (rs_232_dm_tail + i) % RS_232_DM_RXBUFLENGTH;
-
-        // Match header: Byte 0 = 0xBB, Byte 2 = 0x12
-        if (rs_232_dm_rx_buffer[index] == 0xBB &&
-            rs_232_dm_rx_buffer[(index + 2) % RS_232_DM_RXBUFLENGTH] == 0x12) {
-
-            // Check if full 15-byte packet is available in buffer
-            uint16_t next_head = (index + 15) % RS_232_DM_RXBUFLENGTH;
-            bool enough_data;
-
-            if (rx_head >= index) {
-                enough_data = (next_head <= rx_head);
-            } else {
-                enough_data = !(next_head > rx_head && next_head < index);
-            }
-
-            if (!enough_data) {
-                return 0xFF; // Not enough new data yet
-            }
-
-            // Copy packet into ecount_last_packet
-            for (int j = 0; j < 15; j++) {
-                ecount_last_packet[j] = rs_232_dm_rx_buffer[(index + j) % RS_232_DM_RXBUFLENGTH];
-            }
-
-            uint8_t input_type = ecount_last_packet[13];
-
-            // Advance tail after successful parse
-            rs_232_dm_tail = (index + 15) % RS_232_DM_RXBUFLENGTH;
-            rs_232_dm_rx_buffer_full = 0;
-
-            return input_type;
-        }
-    }
-
-    return 0xFF; // No valid packet found
+    // Return 0 or error indicator if parsing failed
+    return 0;
 }
